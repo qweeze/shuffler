@@ -1,8 +1,8 @@
 import asyncio
 import logging
-import re
 import time
 from contextlib import suppress
+from contextvars import ContextVar
 from typing import Any, AsyncIterator, Callable, Coroutine, Self, TypeAlias
 
 from sqlalchemy import event
@@ -14,6 +14,8 @@ from shuffler.strategies import ExhaustiveStrategy, Strategy
 logger = logging.getLogger(__name__)
 
 TaskID: TypeAlias = int
+
+current_task: ContextVar[TaskID | None] = ContextVar("current_task", default=None)
 
 
 class AlchemyPlugin:
@@ -63,14 +65,9 @@ class AlchemyPlugin:
         statement: str,
         **_: Any,
     ) -> None:
-        cur_task = asyncio.current_task()
-        if cur_task is None:
+        if (task_id := current_task.get()) is None:
             return
 
-        if not (m := re.match(r"^ShuffledTask\-(\d+)$", cur_task.get_name())):
-            return
-
-        task_id = int(m.group(1))
         self._shuffle(task_id)
         logger.debug("Task %s: Executing query: %s", task_id, statement)
 
@@ -149,13 +146,19 @@ class AlchemyPlugin:
 
         self._cur_pool_size = len(operations)
 
-        def on_task_done(fut: asyncio.Future[Any]) -> None:
-            self._decrement_pool_size()
-            fut.result()
+        async def wrapper(
+            operation: Callable[[], Coroutine[Any, Any, Any]],
+            task_id: int,
+        ) -> None:
+            token = current_task.set(task_id)
+            try:
+                await operation()
+            finally:
+                current_task.reset(token)
+                self._decrement_pool_size()
 
         async with asyncio.TaskGroup() as tg:
             for ix, operation in enumerate(operations, start=1):
-                task = tg.create_task(operation(), name=f"ShuffledTask-{ix}")
-                task.add_done_callback(on_task_done)
+                tg.create_task(wrapper(operation, task_id=ix))
 
         return self._strategy.finish_sequence()
