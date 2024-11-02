@@ -6,7 +6,7 @@ authors = ["qweeze <qweeze@duck.com>"]
 packages = [{ include = "shuffler" }]
 
 [tool.poetry.dependencies]
-python = "^3.11"
+python = "^3.12"
 
 [tool.poetry.group.dev.dependencies]
 ruff = "^0.6.7"
